@@ -1,2 +1,2 @@
-# nes
+# NES
 Network Embedded Systems
