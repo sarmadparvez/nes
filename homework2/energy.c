@@ -88,12 +88,12 @@ PROCESS_THREAD(energy_pt, ev, data) {
     printf("RTIMER_SECOND: %u\n", RTIMER_SECOND);
 
     // TODO: Implement here
-    static unsigned long old_time_cpu, old_time_led, new_time_cpu, new_time_led, time_cpu, time_led = 0;
+    static unsigned long old_cpu_time, old_led_time, cpu_energy = 0;
 
     energest_init();
     // calculate cpu and led time
-    old_time_cpu = energest_type_time(ENERGEST_TYPE_CPU);
-    old_time_led = energest_type_time(ENERGEST_TYPE_LED_RED);
+    old_cpu_time = energest_type_time(ENERGEST_TYPE_CPU);
+    old_led_time = energest_type_time(ENERGEST_TYPE_LED_RED);
     etimer_set(&et, CLOCK_SECOND);
     // calculate cpu and led time for each second till the program is running
     while(1) {
@@ -102,19 +102,28 @@ PROCESS_THREAD(energy_pt, ev, data) {
         energest_flush();
         
         // calculate cpu and led time for last second
-        new_time_cpu = energest_type_time(ENERGEST_TYPE_CPU);
-        new_time_led = energest_type_time(ENERGEST_TYPE_LED_RED);
+        unsigned long new_cpu_time = energest_type_time(ENERGEST_TYPE_CPU);
+        unsigned long new_led_time = energest_type_time(ENERGEST_TYPE_LED_RED);
 
-        // calculate time in microseconds i.e by dividing time difference(no of ticks) with RTIMER_SECOND (tick possible in 1 second) and
+        // calculate time in milliseconds i.e by dividing time difference(no of ticks) with RTIMER_SECOND (tick possible in 1 second) and
         // multiplying with 1000 to convert it to milli seconds
-        time_cpu = (new_time_cpu - old_time_cpu) * 1000 / RTIMER_SECOND;
-        time_led = (new_time_led - old_time_led) * 1000 / RTIMER_SECOND;
+        unsigned long cpu_time = (new_cpu_time - old_cpu_time) * 1000 / RTIMER_SECOND;
+        unsigned long led_time = (new_led_time - old_led_time) * 1000 / RTIMER_SECOND;
         
-        printf("Time: cpu = %lu (ms), led = %lu (ms)\n", time_cpu, time_led);
-
+        printf("Time: cpu = %lu (ms), led = %lu (ms)\n", cpu_time, led_time);
         /* Store the new values */
-        old_time_cpu = new_time_cpu;
-        old_time_led = new_time_led;
+        old_cpu_time = new_cpu_time;
+        old_led_time = new_led_time;
+
+        // energy calculation
+        // From the data sheet of tmote sky: https://insense.cs.st-andrews.ac.uk/files/2013/04/tmote-sky-datasheet.pdf
+        // Active current Vcc i.e 3V, 1Mhz i.e 500μA
+        // Convert the current to mA(milliamperes) because the time is also in ms(milliseconds)
+        // 500μA = 0.5 mA
+        // energy = current * time * voltage
+        cpu_energy = 0.5 * cpu_time * 3;
+        printf("Energy: cpu = %lu(mJ)\n\n", cpu_energy);
+
         // reset timer
         etimer_reset(&et);
     }
