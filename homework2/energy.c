@@ -88,7 +88,7 @@ PROCESS_THREAD(energy_pt, ev, data) {
     printf("RTIMER_SECOND: %u\n", RTIMER_SECOND);
 
     // TODO: Implement here
-    static unsigned long old_cpu_time, old_led_time, cpu_energy = 0;
+    static unsigned long old_cpu_time, old_led_time = 0;
 
     energest_init();
     // calculate cpu and led time
@@ -118,11 +118,12 @@ PROCESS_THREAD(energy_pt, ev, data) {
         // energy calculation
         // From the data sheet of tmote sky: https://insense.cs.st-andrews.ac.uk/files/2013/04/tmote-sky-datasheet.pdf
         // Active current Vcc i.e 3V, 1Mhz i.e 500μA
-        // Convert the current to mA(milliamperes) because the time is also in ms(milliseconds)
+        // Convert the current to mA(milliamperes)
         // 500μA = 0.5 mA
         // energy = current * time * voltage
-        cpu_energy = 0.5 * cpu_time * 3;
-        printf("Energy: cpu = %lu(mJ)\n\n", cpu_energy);
+        unsigned long cpu_energy = 0.5 * 3 * cpu_time;
+        // energy in microjoules
+        printf("Energy: cpu = %lu(uJ)\n\n", cpu_energy);
 
         // reset timer
         etimer_reset(&et);
