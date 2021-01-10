@@ -9,6 +9,7 @@
 
 # Unignore Make files
 !*/Makefile
+!*/*/Makefile
 
 ### Above combination will ignore all files without extension ###
 
@@ -95,3 +96,6 @@ dkms.conf
 */COOJA.log
 */symbols.c
 */symbols.h
+*/*/COOJA.log
+*/*/symbols.c
+*/*/symbols.h
