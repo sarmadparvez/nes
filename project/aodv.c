@@ -4,6 +4,7 @@
 #include "dev/button-sensor.h"
 #include "dev/leds.h"
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "lib/list.h"
 #include "lib/memb.h"
@@ -57,16 +58,33 @@ MEMB(routing_table_mem, struct table_record, TABLE_SIZE);
 /**
  * Create a new entry in routing table
 */
-static void insert_row(struct collect_msg *msg, const linkaddr_t *from) {
+static void insert_row(struct collect_msg msg, const linkaddr_t *from) {
 
     struct table_record *tr = NULL;
     tr = memb_alloc(&routing_table_mem);
-    linkaddr_copy((linkaddr_t *)&tr->dest_addr, (linkaddr_t *)&msg->source_addr);
+    linkaddr_copy((linkaddr_t *)&tr->dest_addr, (linkaddr_t *)&msg.source_addr);
     linkaddr_copy((linkaddr_t *)&tr->next_addr, (linkaddr_t *)&from);
-    tr->dest_seq = msg->dest_seq;
-    tr->distance = ++msg->distance;
+    tr->dest_seq = msg.dest_seq;
+    tr->distance = msg.distance;
     tr->interval = CLOCK_SECOND * 3;
     list_push(routing_table, tr);
+}
+
+/**
+ * Search a record in routing table
+*/
+
+static struct table_record *search_row(struct table_record filter) {
+    struct table_record *tr = malloc(sizeof(struct table_record));
+    for (tr = list_head(routing_table); tr != NULL; tr = list_item_next(tr))
+    {
+        if (linkaddr_cmp(&tr->dest_addr, &filter.dest_addr)) {
+            // found on based of destination address
+            return tr;
+        } 
+    }
+    free(tr);
+    return NULL;
 }
 
 /**
@@ -87,26 +105,51 @@ static void print_routing_table()
 // handler for receiving a broadcast message
 static void
 recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
-	struct collect_msg *msg;
-	msg = (struct collect_msg *)packetbuf_dataptr();
+	struct collect_msg msg;
+	msg = *((struct collect_msg *)packetbuf_dataptr());
 
     // print the received message details
 	printf("broadcast message received from %d.%d: \n", from->u8[0], from->u8[1]);
 
     printf("source address: %d.%d, source seq: %lu, broadcast id: %lu, dest address: %d.%d, dest seq: %lu, hop count: %u \n",
-    msg->source_addr.u8[0],msg->source_addr.u8[1], msg->source_seq, msg->broadcast_id, msg->dest_addr.u8[0], msg->dest_addr.u8[1], msg->dest_seq, msg->distance);
+    msg.source_addr.u8[0],msg.source_addr.u8[1], msg.source_seq, msg.broadcast_id, msg.dest_addr.u8[0], msg.dest_addr.u8[1], msg.dest_seq, msg.distance);
 
-    // create a new entry in routing table
-    insert_row(msg, from);
-    // printing routing table
-    print_routing_table();
+    
+    // check if current node is the destination node
+    if (linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr)) {
+        // this is the destination node, prepare a route reply RREP
+        // search in the routing table, the route to source node (to send RREP)
+        // unicast_send(&uc, &addr);
+    }
+    // check if route to destination exist in routing table, otherwise re-broadcast
+    // prepare search filter, find by destiantion address
+    struct table_record filter;
+    linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.dest_addr);
+    struct table_record *table_entry = search_row(filter);
+    if (table_entry != NULL) {
+        // record found in routing table
+        printf("record found in table for destination %d.%d \n", table_entry->dest_addr.u8[0], table_entry->dest_addr.u8[1]);
+        // start uni casting from here
+        free(table_entry);
+    } else {
+        // route to destination not found in routing table, re-broadcast and insert routing table
+        // re-broadcasting
+        msg.distance++;
+        packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
+        /* Send broadcast packet RREQ */
+        broadcast_send(&broadcast);
+        // create a new entry in routing table
+        insert_row(msg, from);
+        // printing routing table
+        print_routing_table();
+    }
 }
 
 static const struct broadcast_callbacks broadcast_callbacks = {recv_broadcast};
 
 /**
- * Source node sending the message
- * When a user button is pressed, send the message to desitnation node i.e 5.0
+ * Source node sending the message RREQ
+ * When a user button is pressed, send the message to desitnation node i.e 8.0
 */
 PROCESS_THREAD(pt_source, ev, data) {
 	PROCESS_EXITHANDLER(broadcast_close(&broadcast);)
@@ -137,14 +180,14 @@ PROCESS_THREAD(pt_source, ev, data) {
         msg.broadcast_id = broadcast_id;
         msg.source_seq = seq_no;
         msg.dest_seq = 0;
-        msg.distance = 0;
+        msg.distance = 1;
 
         // if this is not the destination node, broadcast the message
         if (!linkaddr_cmp(&addr, &linkaddr_node_addr))
         {
             /* Copy data to the packet buffer */
             packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
-            /* Send broadcast packet */
+            /* Send broadcast packet RREQ */
             broadcast_send(&broadcast);
             broadcast_id++;
             seq_no++;
