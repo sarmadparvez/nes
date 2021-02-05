@@ -32,7 +32,6 @@ static uint32_t broadcast_id = 1;
 
 // a struct representing a single record/row for routing table
 struct table_record {
-    struct table_record * next;
 	linkaddr_t dest_addr; // address of the destination node
     linkaddr_t next_addr; // address of the next node
     uint8_t distance; // distance to destination node (hop count)
@@ -78,7 +77,7 @@ static void print_routing_table()
     printf("printing routing table \n");
     struct table_record *tr = NULL;
     // print the contents of routing table
-    for (tr = list_head(routing_table); tr != NULL; tr = tr->next)
+    for (tr = list_head(routing_table); tr != NULL; tr = list_item_next(tr))
     {
         printf("distance %u\n", tr->distance);
         // ToDo: Print the all fields of the table 
