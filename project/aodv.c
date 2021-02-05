@@ -82,33 +82,36 @@ PROCESS_THREAD(pt_source, ev, data) {
 
 	SENSORS_ACTIVATE(button_sensor);
 
-	// wait for user button press
-	PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event && data == &button_sensor);
+    while (1)
+    {
+        // wait for user button press
+        PROCESS_WAIT_EVENT_UNTIL(ev == sensors_event && data == &button_sensor);
+        // Set address of the destination node (8.0)
+        linkaddr_t addr;
+        addr.u8[0] = 8;
+        addr.u8[1] = 0;
 
-    // Set address of the destination node (8.0)
-    linkaddr_t addr;
-    addr.u8[0] = 8;
-    addr.u8[1] = 0;
+        // prepare the message to be sent
+        struct collect_msg msg;
+        // copy source and destination addresses
+        linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
+        linkaddr_copy((linkaddr_t *)&msg.dest_addr, &addr);
+        msg.broadcast_id = broadcast_id;
+        msg.source_seq = seq_no;
+        msg.dest_seq = 0;
+        msg.distance = 1;
 
-	// prepare the message to be sent
-	struct collect_msg msg;
-    // copy source and destination addresses
-    linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
-    linkaddr_copy((linkaddr_t *)&msg.dest_addr, &addr);    
-    msg.broadcast_id = broadcast_id;
-    msg.source_seq = seq_no;
-    msg.dest_seq = 0;
-    msg.distance = 1;
-    
-    // if this is not the destination node, broadcast the message
-    if (!linkaddr_cmp(&addr, &linkaddr_node_addr)) {
-        /* Copy data to the packet buffer */
-		packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
-        /* Send broadcast packet */
-        broadcast_send(&broadcast);
-        broadcast_id++;
-        seq_no++;
+        // if this is not the destination node, broadcast the message
+        if (!linkaddr_cmp(&addr, &linkaddr_node_addr))
+        {
+            /* Copy data to the packet buffer */
+            packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
+            /* Send broadcast packet */
+            broadcast_send(&broadcast);
+            broadcast_id++;
+            seq_no++;
+        }
     }
 
-	PROCESS_END();
+    PROCESS_END();
 }
