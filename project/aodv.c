@@ -67,7 +67,7 @@ static void insert_row(struct collect_msg msg, const linkaddr_t *from) {
     tr = memb_alloc(&routing_table_mem);
     linkaddr_copy((linkaddr_t *)&tr->dest_addr, &msg.source_addr);
     linkaddr_copy((linkaddr_t *)&tr->next_addr, from);
-    tr->dest_seq = msg.dest_seq;
+    tr->dest_seq = msg.source_seq;
     tr->distance = msg.distance;
     tr->interval = CLOCK_SECOND * 3;
     tr->broadcast_id = msg.broadcast_id;
@@ -106,7 +106,20 @@ static void print_routing_table()
     }
 }
 
-// handler for receiving a broadcast message
+/**
+ * Print a message
+*/
+static void print_message(struct collect_msg msg)
+{
+    printf("source address: %d.%d, source seq: %lu, broadcast id: %lu, dest address: %d.%d, dest seq: %lu, hop count: %u \n",
+           msg.source_addr.u8[0], msg.source_addr.u8[1], msg.source_seq, msg.broadcast_id, msg.dest_addr.u8[0], msg.dest_addr.u8[1], msg.dest_seq, msg.distance);
+}
+
+/*************************************************************************/
+/* 
+ * Callback function for broadcast
+ * Called when a packet has been received by the broadcast module
+ */
 static void
 recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
 	struct collect_msg msg;
@@ -133,10 +146,7 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
 
     // print the received message details
 	printf("broadcast message received from %d.%d: \n", from->u8[0], from->u8[1]);
-
-    printf("source address: %d.%d, source seq: %lu, broadcast id: %lu, dest address: %d.%d, dest seq: %lu, hop count: %u \n",
-    msg.source_addr.u8[0],msg.source_addr.u8[1], msg.source_seq, msg.broadcast_id, msg.dest_addr.u8[0], msg.dest_addr.u8[1], msg.dest_seq, msg.distance);
-
+    print_message(msg);
     // check if current node is the destination node
     if (linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr)) {
         // this is the destination node, prepare a route reply RREP
@@ -147,7 +157,14 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
         // printing routing table
         print_routing_table();
 
-        return;
+        // prepare RREP (route reply)
+        // the source becomes destination
+        linkaddr_copy((linkaddr_t *)&msg.dest_addr, &msg.source_addr);
+        // the destination becomes source
+        linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
+        msg.distance = 1;
+        printf("Message has received its destination. Now sending RREP \n");
+        // return;
     }
     // check if route to destination exist in routing table, otherwise re-broadcast
     // prepare search filter, find by destination address
@@ -157,6 +174,13 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
         // record found in routing table
         printf("record found in table for destination %d.%d \n", table_entry->dest_addr.u8[0], table_entry->dest_addr.u8[1]);
         // start uni casting from here
+        /* Copy data to the packet buffer */
+        packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
+        msg.dest_seq = msg.source_seq;
+        msg.source_seq = seq_no;
+        msg.distance = 1;
+        seq_no++;
+        unicast_send(&uc, &table_entry->next_addr);
         free(table_entry);
         table_entry = NULL;
     } else {
@@ -175,6 +199,56 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
 
 static const struct broadcast_callbacks broadcast_callbacks = {recv_broadcast};
 
+/*************************************************************************/
+/* 
+ * Callback function for unicast
+ * Called when a packet has been received by the broadcast module
+ */
+static void
+unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
+	struct collect_msg msg;
+	msg = *((struct collect_msg *)packetbuf_dataptr());
+    printf("unicast message received from %d.%d:\n",
+           from->u8[0], from->u8[1]);
+    print_message(msg);
+
+    // check if current node is the destintation node
+    printf("Current node address %d.%d \n", linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1]);
+    if (linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr)) {
+        // this is the destination node
+        printf("Source node received acknowledgment");
+        return;
+    }
+    // check if route to destination exist in routing table
+    // prepare search filter, find by destination address
+    struct table_record filter;
+    struct table_record *table_entry = NULL;
+    linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.dest_addr);
+    table_entry = search_row(filter);
+    if (table_entry != NULL) {
+        // record found in routing table, unicast it to destination
+        printf("record found in table for destination %d.%d \n", table_entry->dest_addr.u8[0], table_entry->dest_addr.u8[1]);
+        // start uni casting from here
+        // msg.dest_seq = msg.source_seq;
+        // msg.source_seq = seq_no;
+        // msg.distance++ = 1;
+        // seq_no++;
+        // set forward pointer i.e store the information in routing table
+        insert_row(msg, from);
+        print_routing_table();
+        msg.distance++;
+        /* Copy data to the packet buffer */
+        packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
+        unicast_send(&uc, &table_entry->next_addr);
+        free(table_entry);
+        table_entry = NULL;
+    }
+}
+
+static const struct unicast_callbacks unicast_cb = {unicast_recv};
+
+/******************************************************************************/
+
 /**
  * Source node sending the message RREQ
  * When a user button is pressed, send the message to desitnation node i.e 8.0
@@ -183,8 +257,11 @@ PROCESS_THREAD(pt_source, ev, data) {
 	PROCESS_EXITHANDLER(broadcast_close(&broadcast);)
 	PROCESS_BEGIN();
 
+    // set a broadcast connection at channel 130
 	broadcast_open(&broadcast, 130, &broadcast_callbacks);
-
+    // Set up a unicast connection at channel 146
+    unicast_open(&uc, 146, &unicast_cb);
+    
 	SENSORS_ACTIVATE(button_sensor);
 
     // initialize the routing table
