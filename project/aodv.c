@@ -32,22 +32,26 @@ static uint32_t seq_no = 1;
 static uint32_t broadcast_id = 1;
 
 // a struct representing a single record/row for routing table
-struct table_record {
-	linkaddr_t dest_addr; // address of the destination node
-    linkaddr_t next_addr; // address of the next node
-    uint8_t distance; // distance to destination node (hop count)
-    uint32_t  dest_seq; // sequence number for destination node
+struct table_record
+{
+    struct table_record *next; // pointer to the next record in table
+    linkaddr_t dest_addr;  // address of the destination node
+    linkaddr_t next_addr;  // address of the next node
+    uint8_t distance;      // distance to destination node (hop count)
+    uint32_t dest_seq;     // sequence number for destination node
     clock_time_t interval; // route discovery timeout
+    uint32_t broadcast_id; // the unique brodcast id for the message
 };
 
 // a struct representing a message that is sent from source to destination
-struct collect_msg {
-	linkaddr_t source_addr; // address of the source node
-	uint32_t  source_seq; // sequence number of source node
-    uint32_t broadcast_id; // the unique brodcast id for the message
-    uint32_t dest_seq; // sequence number of destination node
-    linkaddr_t dest_addr; // address of the destination node
-    uint8_t distance; // distance travelled so far (hope count)
+struct collect_msg
+{
+    linkaddr_t source_addr; // address of the source node
+    uint32_t source_seq;    // sequence number of source node
+    uint32_t broadcast_id;  // the unique brodcast id for the message
+    uint32_t dest_seq;      // sequence number of destination node
+    linkaddr_t dest_addr;   // address of the destination node
+    uint8_t distance;       // distance travelled so far (hope count)
 };
 
 // declare a list representing the routing table
@@ -59,14 +63,14 @@ MEMB(routing_table_mem, struct table_record, TABLE_SIZE);
  * Create a new entry in routing table
 */
 static void insert_row(struct collect_msg msg, const linkaddr_t *from) {
-
     struct table_record *tr = NULL;
     tr = memb_alloc(&routing_table_mem);
-    linkaddr_copy((linkaddr_t *)&tr->dest_addr, (linkaddr_t *)&msg.source_addr);
-    linkaddr_copy((linkaddr_t *)&tr->next_addr, (linkaddr_t *)&from);
+    linkaddr_copy((linkaddr_t *)&tr->dest_addr, &msg.source_addr);
+    linkaddr_copy((linkaddr_t *)&tr->next_addr, from);
     tr->dest_seq = msg.dest_seq;
     tr->distance = msg.distance;
     tr->interval = CLOCK_SECOND * 3;
+    tr->broadcast_id = msg.broadcast_id;
     list_push(routing_table, tr);
 }
 
@@ -97,7 +101,7 @@ static void print_routing_table()
     // print the contents of routing table
     for (tr = list_head(routing_table); tr != NULL; tr = list_item_next(tr))
     {
-        printf("distance %u\n", tr->distance);
+        printf("dest addr %d.%d, next %d.%d, distance %u, dest seq %lu, broadcast id %lu \n", tr->dest_addr.u8[0], tr->dest_addr.u8[1], tr->next_addr.u8[0], tr->next_addr.u8[1] , tr->distance, tr->dest_seq, tr->broadcast_id);
         // ToDo: Print the all fields of the table 
     }
 }
@@ -107,6 +111,25 @@ static void
 recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
 	struct collect_msg msg;
 	msg = *((struct collect_msg *)packetbuf_dataptr());
+    // if it is a source node and it received request from its neighbours, discard it
+    if (linkaddr_cmp(&msg.source_addr, &linkaddr_node_addr)) {
+        return;
+    }
+
+    struct table_record filter;
+    struct table_record *table_entry = NULL;
+    // check if same request is received again, discard it.
+    // the source address and broadcast id uniquely identifies a request
+    // prepare filter to search in table
+    linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.source_addr);
+    filter.broadcast_id = msg.broadcast_id;
+    table_entry = search_row(filter);
+    if (table_entry != NULL && table_entry->broadcast_id == msg.broadcast_id) {
+        // its a duplicate request, discard it
+        free(table_entry);
+        table_entry = NULL;
+        return;
+    }
 
     // print the received message details
 	printf("broadcast message received from %d.%d: \n", from->u8[0], from->u8[1]);
@@ -114,34 +137,39 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
     printf("source address: %d.%d, source seq: %lu, broadcast id: %lu, dest address: %d.%d, dest seq: %lu, hop count: %u \n",
     msg.source_addr.u8[0],msg.source_addr.u8[1], msg.source_seq, msg.broadcast_id, msg.dest_addr.u8[0], msg.dest_addr.u8[1], msg.dest_seq, msg.distance);
 
-    
     // check if current node is the destination node
     if (linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr)) {
         // this is the destination node, prepare a route reply RREP
         // search in the routing table, the route to source node (to send RREP)
         // unicast_send(&uc, &addr);
+        // create a new entry in routing table
+        insert_row(msg, from);
+        // printing routing table
+        print_routing_table();
+
+        return;
     }
     // check if route to destination exist in routing table, otherwise re-broadcast
-    // prepare search filter, find by destiantion address
-    struct table_record filter;
+    // prepare search filter, find by destination address
     linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.dest_addr);
-    struct table_record *table_entry = search_row(filter);
+    table_entry = search_row(filter);
     if (table_entry != NULL) {
         // record found in routing table
         printf("record found in table for destination %d.%d \n", table_entry->dest_addr.u8[0], table_entry->dest_addr.u8[1]);
         // start uni casting from here
         free(table_entry);
+        table_entry = NULL;
     } else {
         // route to destination not found in routing table, re-broadcast and insert routing table
+        // create a new entry in routing table
+        insert_row(msg, from);
+        // printing routing table
+        print_routing_table();
         // re-broadcasting
         msg.distance++;
         packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
         /* Send broadcast packet RREQ */
         broadcast_send(&broadcast);
-        // create a new entry in routing table
-        insert_row(msg, from);
-        // printing routing table
-        print_routing_table();
     }
 }
 
