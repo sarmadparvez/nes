@@ -12,12 +12,10 @@
 #include <stdbool.h>
 
 PROCESS(pt_source, "Message source");
+// PROCESS(pt_timer, "Timer process");
 
 AUTOSTART_PROCESSES(&pt_source);
 
-
-// Size of the mote address
-#define LINKADDR_SIZE 2
 
 // Maximum number of enteries in routing table
 #define TABLE_SIZE 32
@@ -46,7 +44,7 @@ struct table_record
 };
 
 // a struct representing a message that is sent from source to destination
-struct collect_msg
+struct route_msg
 {
     linkaddr_t source_addr; // address of the source node
     uint32_t source_seq;    // sequence number of source node
@@ -54,6 +52,7 @@ struct collect_msg
     uint32_t dest_seq;      // sequence number of destination node
     linkaddr_t dest_addr;   // address of the destination node
     uint8_t distance;       // distance travelled so far (hope count)
+    bool is_print_only;
 };
 
 // declare a list representing the routing table
@@ -64,7 +63,7 @@ MEMB(routing_table_mem, struct table_record, TABLE_SIZE);
 /**
  * Create a new entry in routing table
 */
-static void insert_row(struct collect_msg msg, const linkaddr_t *from) {
+static void insert_row(struct route_msg msg, const linkaddr_t *from) {
     struct table_record *tr = NULL;
     tr = memb_alloc(&routing_table_mem);
     linkaddr_copy((linkaddr_t *)&tr->dest_addr, &msg.source_addr);
@@ -96,20 +95,18 @@ static struct table_record *search_row(struct table_record filter) {
 /**
  * This function inserts or updates a route in routing table on RREP (route reply request)
 */
-static bool upsert_route_for_REP(struct collect_msg msg, const linkaddr_t *from) {
+static bool upsert_route_for_REP(struct route_msg msg, const linkaddr_t *from) {
     struct table_record filter;
     linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.source_addr);
     struct table_record *table_entry = search_row(filter);
     // Check if RREP for this request is already sent, if it is already sent
-    if (table_entry != NULL) {
+    if (table_entry != NULL && table_entry->broadcast_id == msg.broadcast_id) {
         printf("This RREP is already sent------------------------------------------- \n");
         // this RREP is already forwarded, only resend it if either
         // 1. This RREP has greater dest seq number OR
         // 2. Same dest seq number with smaller hop count
-        if (table_entry->broadcast_id == msg.broadcast_id &&
-        ((msg.dest_seq > table_entry->dest_seq ) || 
-            (msg.dest_seq == table_entry->dest_seq && table_entry->distance > msg.distance)
-        )) {
+        if ((msg.dest_seq > table_entry->dest_seq ) || 
+            (msg.dest_seq == table_entry->dest_seq && table_entry->distance > msg.distance)) {
             printf("This is a better route and is updated in routing table \n");
             // update the route infromation in table
             table_entry->distance = msg.distance;
@@ -144,10 +141,18 @@ static void print_routing_table()
 /**
  * Print a message
 */
-static void print_message(struct collect_msg msg)
+static void print_message(struct route_msg msg)
 {
     printf("source address: %d.%d, source seq: %lu, broadcast id: %lu, dest address: %d.%d, dest seq: %lu, hop count: %u \n",
            msg.source_addr.u8[0], msg.source_addr.u8[1], msg.source_seq, msg.broadcast_id, msg.dest_addr.u8[0], msg.dest_addr.u8[1], msg.dest_seq, msg.distance);
+}
+
+static void send_unicast_msg(struct route_msg msg, linkaddr_t dest, struct table_record *table_entry) {
+    /* Copy data to the packet buffer */
+    packetbuf_copyfrom(&msg, sizeof(struct route_msg));
+    unicast_send(&uc, &dest);
+    free(table_entry);
+    table_entry = NULL;  
 }
 
 /*************************************************************************/
@@ -157,8 +162,8 @@ static void print_message(struct collect_msg msg)
  */
 static void
 recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
-	struct collect_msg msg;
-	msg = *((struct collect_msg *)packetbuf_dataptr());
+	struct route_msg msg;
+	msg = *((struct route_msg *)packetbuf_dataptr());
     // if it is a source node and it received request from its neighbours, discard it
     if (linkaddr_cmp(&msg.source_addr, &linkaddr_node_addr)) {
         return;
@@ -181,10 +186,10 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
     // print the received message details
 	printf("broadcast message received from %d.%d: \n", from->u8[0], from->u8[1]);
     print_message(msg);
+
     // check if current node is the destination node
     if (linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr)) {
         // this is the destination node, prepare a route reply RREP
-        // search in the routing table, the route to source node (to send RREP)
         // create a new entry in routing table
         insert_row(msg, from);
         // printing routing table
@@ -196,7 +201,7 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
         // the destination becomes source
         linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
         msg.distance = 1;
-        printf("Message has received its destination. Now sending RREP \n");
+        printf("Message has received its destination. \n");
         // return;
     }
     // check if route to destination exist in routing table, otherwise re-broadcast
@@ -226,21 +231,19 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
         }
         
         // start uni casting from here
-        /* Copy data to the packet buffer */
-        packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
-        unicast_send(&uc, &next_addr);
-        free(table_entry);
-        table_entry = NULL;
+        // send unicast message
+        send_unicast_msg(msg, next_addr, table_entry);
         seq_no++;
     } else {
-        // route to destination not found in routing table, re-broadcast and insert routing table
+        // route to destination not found in routing table, re-broadcast and insert in routing table
         // create a new entry in routing table
         insert_row(msg, from);
         // printing routing table
         print_routing_table();
         // re-broadcasting
         msg.distance++;
-        packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
+        packetbuf_copyfrom(&msg, sizeof(struct route_msg));
+        // process_start(&pt_timer, NULL);
         /* Send broadcast packet RREQ */
         broadcast_send(&broadcast);
     }
@@ -255,8 +258,27 @@ static const struct broadcast_callbacks broadcast_callbacks = {recv_broadcast};
  */
 static void
 unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
-	struct collect_msg msg;
-	msg = *((struct collect_msg *)packetbuf_dataptr());
+    struct route_msg msg;
+	msg = *((struct route_msg *)packetbuf_dataptr());
+    
+    // prepare search filter,  and search route to destination address in routing table
+    struct table_record filter;
+    struct table_record *table_entry = NULL;
+    linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.dest_addr);
+    table_entry = search_row(filter);
+
+    if (msg.is_print_only == true) {
+        // this request is only for printing route to destination
+        // every node till destination just prints its address
+        printf("%d.%d \n", linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1]);
+        if (table_entry != NULL) {
+            msg.distance++;
+            // send unicast message
+            send_unicast_msg(msg, table_entry->next_addr, table_entry);
+        }
+        return;
+    }
+    
     printf("unicast message received from %d.%d:\n",
            from->u8[0], from->u8[1]);
     print_message(msg);
@@ -273,12 +295,6 @@ unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
     }
 
     // check if route to destination exist in routing table
-    // prepare search filter, find by destination address
-    struct table_record filter;
-    struct table_record *table_entry = NULL;
-    linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.dest_addr);
-    table_entry = search_row(filter);
-
     if (table_entry != NULL) {
         // record found in routing table i.e this node has route to destination.
         printf("record found in table for destination %d.%d \n", table_entry->dest_addr.u8[0], table_entry->dest_addr.u8[1]);
@@ -291,11 +307,8 @@ unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
             print_routing_table();
             // start uni casting from here
             msg.distance++;
-            /* Copy data to the packet buffer */
-            packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
-            unicast_send(&uc, &table_entry->next_addr);
-            free(table_entry);
-            table_entry = NULL;
+            // send unicast message
+            send_unicast_msg(msg, table_entry->next_addr, table_entry);
         } else {
             // the route is outdated, broadcast again
         }
@@ -340,34 +353,65 @@ PROCESS_THREAD(pt_source, ev, data) {
         table_entry = search_row(filter);
         // if this is not the destination node itself
         if (!linkaddr_cmp(&addr, &linkaddr_node_addr)){
+            // Prepare RREQ
+            struct route_msg msg;
+            msg.broadcast_id = broadcast_id;
+            msg.distance = 1;
+            msg.source_seq = seq_no;
+            msg.is_print_only = false;
+            // copy source address
+            linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
+            // copy destination address
+            linkaddr_copy((linkaddr_t *)&msg.dest_addr, &addr);
             if (table_entry == NULL) {
                 // Route to destination is not available, initiate path discovery
-                // Prepare RREQ
-                struct collect_msg msg;
-                msg.broadcast_id = broadcast_id;
-                msg.distance = 1;
-                msg.dest_seq = table_entry->dest_seq;
-                msg.source_seq = seq_no;
-                // copy source address
-                linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
-                // copy destination address
-                linkaddr_copy((linkaddr_t *)&msg.dest_addr, &addr);
                 // 0 represents the unknown sequence number
                 // the sequence number of destination is unknown initially
                 msg.dest_seq = 0;
                 /* Copy data to the packet buffer */
-                packetbuf_copyfrom(&msg, sizeof(struct collect_msg));
+                packetbuf_copyfrom(&msg, sizeof(struct route_msg));
                 /* Send broadcast packet RREQ */
                 broadcast_send(&broadcast);
-                broadcast_id++;
                 // seq_no++;
             } else {
                 // we have a route to destination and we can send data
-                printf("This node already has route to the destination \n");
-                print_routing_table();
+                printf("This node already has route to the destination. The route is printed below. \n");
+                // print_routing_table();
+                msg.dest_seq = table_entry->dest_seq;
+                // sending actual data to destination, this request just prints the path from
+                // source node to destination node to prove that the routing table is built correctly
+                // and the node has path to destination
+                msg.is_print_only = true; // if true, its just a route printing request, not a route discovery
+                // every node till destination just prints its address
+                printf("%d.%d \n", linkaddr_node_addr.u8[0], linkaddr_node_addr.u8[1]);
+                /* Copy data to the packet buffer */
+                packetbuf_copyfrom(&msg, sizeof(struct route_msg));
+                unicast_send(&uc, &table_entry->next_addr);
             }
+            broadcast_id++;
         }
     }
 
     PROCESS_END();
 }
+
+// static struct etimer et;
+
+/**
+ * The process to delete the reverse pointers (route enteries) if the nodes
+ * does not exists in the path to destination  
+*/
+// PROCESS_THREAD(pt_timer, ev, data)
+// {
+// 	PROCESS_BEGIN();
+//     // 3 seconds are enough to wait for RREP
+// 	etimer_set(&et, CLOCK_SECOND * 3);
+//     printf("Timer process started ---------------------------------\n");
+//     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+//     printf("Timer finished -----------------------------------");
+//     // linkaddr_t *addr = (linkaddr_t *)&data;
+
+//     // printf("Data--------------------------- %d.%d ", addr->u8[0], addr->u8[1]);
+
+// 	PROCESS_END();
+// }
