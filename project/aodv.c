@@ -132,10 +132,12 @@ static void print_routing_table()
 {
     printf("printing routing table \n");
     struct table_record *tr = NULL;
+    uint8_t row = 1;
     // print the contents of routing table
     for (tr = list_head(routing_table); tr != NULL; tr = list_item_next(tr))
     {
-        printf("dest addr %d.%d, next %d.%d, distance %u, dest seq %lu, broadcast id %lu \n", tr->dest_addr.u8[0], tr->dest_addr.u8[1], tr->next_addr.u8[0], tr->next_addr.u8[1] , tr->distance, tr->dest_seq, tr->broadcast_id);
+        printf("row %u: dest addr %d.%d, next %d.%d, distance %u, dest seq %lu, broadcast id %lu \n",row, tr->dest_addr.u8[0], tr->dest_addr.u8[1], tr->next_addr.u8[0], tr->next_addr.u8[1] , tr->distance, tr->dest_seq, tr->broadcast_id);
+        row++;
     }
 }
 
