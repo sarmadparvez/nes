@@ -13,6 +13,7 @@
 
 PROCESS(pt_source, "Message source");
 PROCESS(pt_timer, "Timer process");
+PROCESS(pt_delete_reverse_pointer, "Reverse pointer deletion process");
 
 AUTOSTART_PROCESSES(&pt_source);
 
@@ -31,7 +32,7 @@ static uint32_t seq_no = 1;
 // counter for broadcast id
 static uint32_t broadcast_id = 1;
 
-static struct etimer et;
+static struct etimer et1, et2;
 
 // a struct representing a single record/row for routing table
 struct table_record
@@ -90,22 +91,6 @@ static void insert_row(struct route_msg msg, const linkaddr_t *from) {
     tr->distance = msg.distance;
     tr->interval = CLOCK_SECOND * 3;
     tr->broadcast_id = msg.broadcast_id;
-    // only push in the list if entry is not already available
-    // struct table_record filter;
-    // struct table_record *table_entry = NULL;
-    // // prepare filter to search in table
-    // linkaddr_copy((linkaddr_t *)&filter.dest_addr, &tr->dest_addr);
-    // table_entry = search_row(filter);
-    // if (table_entry != NULL) {
-    //     if (table_entry->distance > msg.distance) {
-    //         table_entry->distance = msg.distance;
-    //         table_entry->broadcast_id = msg.broadcast_id;
-    //         table_entry->next_addr = tr->next_addr;
-    //         table_entry->dest_seq = tr->dest_seq;
-    //     }
-    // } else {
-    //     list_push(routing_table, tr);
-    // }
     list_push(routing_table, tr);
 }
 
@@ -159,7 +144,7 @@ static void print_routing_table()
 */
 static void print_message(struct route_msg msg)
 {
-    printf("source address: %d.%d, source seq: %lu, broadcast id: %lu, dest address: %d.%d, dest seq: %lu, hop count: %u \n",
+    printf("message: source address: %d.%d, source seq: %lu, broadcast id: %lu, dest address: %d.%d, dest seq: %lu, hop count: %u \n",
            msg.source_addr.u8[0], msg.source_addr.u8[1], msg.source_seq, msg.broadcast_id, msg.dest_addr.u8[0], msg.dest_addr.u8[1], msg.dest_seq, msg.distance);
 }
 
@@ -276,6 +261,7 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
         packetbuf_copyfrom(&msg, sizeof(struct route_msg));
         /* Send broadcast packet RREQ */
         broadcast_send(&broadcast);
+        process_start(&pt_delete_reverse_pointer, (linkaddr_t *)&msg.source_addr);
     }
 }
 
@@ -289,6 +275,9 @@ static const struct broadcast_callbacks broadcast_callbacks = {recv_broadcast};
 static void
 unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
     char *ackk = packetbuf_dataptr();
+    // if the acknowledgment is received from neighbour node, exit the timer process
+    // we no longer need to delete the route entry because our immediate neighbour towards the destination
+    // replied back, which means the link is not broken.
     if (strcmp(ackk, "ack") == 0 && etimer_pending()) {
         // expire the timer
         // etimer_stop(&et);
@@ -327,6 +316,12 @@ unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
         return;
     }
     
+    // unicast message is received which means this node is on the path of RREP
+    // we need to exit the timer process which deletes reverse pointer entries
+    if (etimer_pending()) {
+        process_exit(&pt_delete_reverse_pointer);
+    }
+
     printf("unicast message received from %d.%d:\n",
            from->u8[0], from->u8[1]);
     print_message(msg);
@@ -449,10 +444,10 @@ static struct route_msg msg_global;
 PROCESS_THREAD(pt_timer, ev, data)
 {
 	PROCESS_BEGIN();
-    // 3 seconds are enough to wait for RREP
+    // 3 seconds are enough to wait for RREP from immediate neighbour
 	msg_global = *((struct route_msg *)data);
-    etimer_set(&et, CLOCK_SECOND * 3);
-    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et));
+    etimer_set(&et1, CLOCK_SECOND * 3);
+    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et1));
     struct table_record filter;
     linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg_global.dest_addr);
     struct table_record *table_entry = search_row(filter);
@@ -469,3 +464,25 @@ PROCESS_THREAD(pt_timer, ev, data)
 	PROCESS_END();
 }
 
+/**
+ * The nodes that are on the path discovered by RREP are deleted after timeout
+*/
+PROCESS_THREAD(pt_delete_reverse_pointer, ev, data)
+{
+	PROCESS_BEGIN();
+    // 5 seconds are enough to wait for RREP from destination
+	static linkaddr_t dest_addr;
+    linkaddr_copy((linkaddr_t *)&dest_addr, &(*((linkaddr_t *)data)));
+    etimer_set(&et2, CLOCK_SECOND * 3);
+    PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et2));
+    struct table_record filter;
+    linkaddr_copy((linkaddr_t *)&filter.dest_addr, &dest_addr);
+    struct table_record *table_entry = search_row(filter);
+
+    if (table_entry != NULL) {
+        list_remove(routing_table, table_entry);
+        printf("Reverse pointer deleted because the node was not on the path of RREP.\n");
+        print_routing_table();
+    }
+	PROCESS_END();
+}
