@@ -21,6 +21,11 @@ AUTOSTART_PROCESSES(&pt_source);
 // Maximum number of enteries in routing table
 #define TABLE_SIZE 32
 
+/** The number of seconds to wait for RREP before deleting the reverse pointer entries from routing table **/
+/** Please set this to number of seconds based on the numnber of nodes/network size */
+/** If number of nodes are increased for testing, increase it accordingly */
+static uint8_t ACTIVE_ROUTE_TIMEOUT = 4;
+
 // for broadcast connection
 static struct broadcast_conn broadcast;
 
@@ -42,7 +47,6 @@ struct table_record
     linkaddr_t next_addr;  // address of the next node
     uint8_t distance;      // distance to destination node (hop count)
     uint32_t dest_seq;     // sequence number for destination node
-    clock_time_t interval; // route discovery timeout
     uint32_t broadcast_id; // the unique brodcast id for the message
 };
 
@@ -89,9 +93,23 @@ static void insert_row(struct route_msg msg, const linkaddr_t *from) {
     linkaddr_copy((linkaddr_t *)&tr->next_addr, from);
     tr->dest_seq = msg.source_seq;
     tr->distance = msg.distance;
-    tr->interval = CLOCK_SECOND * 3;
     tr->broadcast_id = msg.broadcast_id;
-    list_push(routing_table, tr);
+
+    // create a new entry in routing table if it not exists previously
+    struct table_record filter;
+    struct table_record *table_entry = NULL;
+    linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg.source_addr);
+    table_entry = search_row(filter);
+    if (table_entry != NULL) {
+        linkaddr_copy((linkaddr_t *)&table_entry->dest_addr, &msg.source_addr);
+        linkaddr_copy((linkaddr_t *)&table_entry->next_addr, from);
+        table_entry->dest_seq = msg.source_seq;
+        table_entry->distance = msg.distance;
+        table_entry->broadcast_id = msg.broadcast_id;
+        free(table_entry);
+    } else {
+        list_push(routing_table, tr);
+    }
 }
 
 /**
@@ -163,10 +181,6 @@ static void send_unicast_msg(struct route_msg msg, linkaddr_t dest, struct table
 
 // Start broadcasting a message from source node
 static void start_broadcast(struct route_msg msg) {
-    // Route to destination is not available, initiate path discovery
-    // 0 represents the unknown sequence number
-    // the sequence number of destination is unknown initially
-    msg.dest_seq = 0;
     /* Copy data to the packet buffer */
     packetbuf_copyfrom(&msg, sizeof(struct route_msg));
     /* Send broadcast packet RREQ */
@@ -204,9 +218,10 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
     // print the received message details
 	printf("broadcast message received from %d.%d: \n", from->u8[0], from->u8[1]);
     print_message(msg);
-
+    bool is_destination = false; // true if this is the destination node
     // check if current node is the destination node
     if (linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr)) {
+        is_destination = true;
         // this is the destination node, prepare a route reply RREP
         // create a new entry in routing table
         insert_row(msg, from);
@@ -227,11 +242,16 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
     table_entry = search_row(filter);
     linkaddr_t next_addr;
 
-    if (table_entry != NULL) {
+    // an intermediate node can only reply on behalf of destination if destination
+    // sequence number in route table is grater than or equal to the one which is in REQUEST
+    if (table_entry != NULL && ((table_entry->dest_seq >= msg.dest_seq) || is_destination ) && table_entry->distance != UINT8_MAX) {
         // record found in routing table
         printf("record found in table for destination %d.%d. Now sending RREP \n", table_entry->dest_addr.u8[0], table_entry->dest_addr.u8[1]);
         if (!linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr) && !linkaddr_cmp(&msg.source_addr, &linkaddr_node_addr)) {
             // This is not destination nor source node
+            // create a new entry in routing table
+            insert_row(msg, from);
+            print_routing_table();
             // The route to destination is found on this is an intermediate node, send RREP
             msg.dest_seq = table_entry->dest_seq;
             msg.distance = table_entry->distance + 1;
@@ -242,8 +262,13 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
             linkaddr_copy((linkaddr_t *)&next_addr, from);
         } else {
             // this is the destination node
-            msg.dest_seq = msg.source_seq;
-            msg.source_seq = seq_no;
+            uint8_t temp_dest_seq = msg.source_seq;
+            if (msg.dest_seq > seq_no) {
+                msg.source_seq = msg.dest_seq;
+            } else {
+                msg.source_seq = seq_no;
+            }
+            msg.dest_seq = temp_dest_seq;
             msg.distance = 1;
             linkaddr_copy((linkaddr_t *)&next_addr, &table_entry->next_addr);
         }
@@ -254,13 +279,13 @@ recv_broadcast(struct broadcast_conn *c, const linkaddr_t *from) {
         // seq_no++;
     } else {
         // route to destination not found in routing table, re-broadcast and insert in routing table
-        // create a new entry in routing table only
         insert_row(msg, from);
         // printing routing table
         print_routing_table();
         // re-broadcasting
         msg.distance++;
         packetbuf_copyfrom(&msg, sizeof(struct route_msg));
+        printf("Broadcasting again \n");
         /* Send broadcast packet RREQ */
         broadcast_send(&broadcast);
         process_start(&pt_delete_reverse_pointer, (linkaddr_t *)&msg.source_addr);
@@ -278,7 +303,7 @@ static void
 unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
     char *ackk = packetbuf_dataptr();
     // if the acknowledgment is received from neighbour node, exit the timer process
-    // we no longer need to delete the route entry because our immediate neighbour towards the destination
+    // we no longer need to send RERR because our immediate neighbour towards the destination
     // replied back, which means the link is not broken.
     if (strcmp(ackk, "ack") == 0 && etimer_pending()) {
         // expire the timer
@@ -307,15 +332,33 @@ unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
                 // send unicast message
                 send_unicast_msg(msg, table_entry->next_addr, table_entry);
             }
-            linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
-            msg.distance = 1;
-            msg.broadcast_id = broadcast_id;
+            // initiate the timer process
             process_start(&pt_timer, (struct route_msg*)&msg);
         } 
         // sending an acknowledgment back to previous neighbour
         packetbuf_copyfrom("ack", 3);
         unicast_send(&uc, from);
         return;
+    } else if (msg.distance == UINT8_MAX) {
+        // this is a RERR, set hop count to infinity
+        struct table_record filter1;
+        struct table_record *table_entry1 = NULL;
+        linkaddr_copy((linkaddr_t *)&filter1.dest_addr, &msg.source_addr);
+        table_entry1 = search_row(filter1);   
+        if (table_entry1 != NULL) {
+            table_entry1->distance = UINT8_MAX;
+            free(table_entry1);
+            print_routing_table();
+            if (linkaddr_cmp(&msg.dest_addr, &linkaddr_node_addr)) {
+                // if current node is the actual source node which initiated request
+                return;
+            } else {
+                // send unicast message i.e propagate RERR backwards
+                printf("Propagating RERR backwards to %d.%d ", table_entry->next_addr.u8[0], table_entry->next_addr.u8[1]);
+                send_unicast_msg(msg, table_entry->next_addr, table_entry);
+                return;
+            }
+        }
     }
     
     // unicast message is received which means this node is on the path of RREP
@@ -355,7 +398,7 @@ unicast_recv(struct unicast_conn *c, const linkaddr_t *from) {
             // send unicast message
             send_unicast_msg(msg, table_entry->next_addr, table_entry);
         } else {
-            // the route is outdated, broadcast again
+            // the route is outdated
         }
     }
 }
@@ -406,6 +449,7 @@ PROCESS_THREAD(pt_source, ev, data)
             msg.broadcast_id = broadcast_id;
             msg.distance = 1;
             msg.source_seq = seq_no;
+            msg.dest_seq = 0; // the destination seq number is unknown initially
             msg.is_print_only = false;
             // copy source address
             linkaddr_copy((linkaddr_t *)&msg.source_addr, &linkaddr_node_addr);
@@ -413,6 +457,12 @@ PROCESS_THREAD(pt_source, ev, data)
             linkaddr_copy((linkaddr_t *)&msg.dest_addr, &addr);
             if (table_entry == NULL)
             {
+                start_broadcast(msg);
+            }
+            else if (table_entry->distance == UINT8_MAX)
+            {
+                // hop count is infinity, do the broadcast after incrementing the sequence number
+                msg.dest_seq = table_entry->dest_seq + 1;
                 start_broadcast(msg);
             }
             else
@@ -440,34 +490,57 @@ PROCESS_THREAD(pt_source, ev, data)
 
 // To store the message for timer process
 static struct route_msg msg_global;
+
 /**
- * On timeout, delete entry from routing table and rebroadcast to find a new path (broken links) 
+ * On timeout perform RERR . Set hop count to infinity and propagate this message back to actual source node 
 */
 PROCESS_THREAD(pt_timer, ev, data)
 {
 	PROCESS_BEGIN();
-    // 3 seconds are enough to wait for RREP from immediate neighbour
+    // 3 seconds are enough to wait for acknowledgment from immediate neighbour
 	msg_global = *((struct route_msg *)data);
-    etimer_set(&et1, CLOCK_SECOND * 3);
+    etimer_set(&et1, CLOCK_SECOND * 4);
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et1));
+    
+    // set the hope count to infinity (i.e UINT8_MAX) in current node first 
+    struct table_record filter1;
+    linkaddr_copy((linkaddr_t *)&filter1.dest_addr, &msg_global.dest_addr);
+    struct table_record *table_entry1 = search_row(filter1);
+    if (table_entry1 != NULL) {
+        printf("Error detected. Reply not received within timout from node %d.%d.\n", table_entry1->next_addr.u8[0], table_entry1->next_addr.u8[1]);
+        printf("Setting hop count to infinity for this and previous nodes \n");
+        table_entry1->distance = UINT8_MAX;
+        free(table_entry1);
+    }
+    
+    // Now send RERR to source node i.e informing about the error so that all nodes
+    // till source node set the hop count to infinity
+
+    linkaddr_t temp_addr;
+    linkaddr_copy((linkaddr_t *)&temp_addr, &msg_global.dest_addr);
+    // the source becomes destination and destination becomes soruce (For sending RERR)
+    linkaddr_copy((linkaddr_t *)&msg_global.dest_addr, &msg_global.source_addr);
+    linkaddr_copy((linkaddr_t *)&msg_global.source_addr, &temp_addr);
+
+    msg_global.distance = UINT8_MAX;
+
     struct table_record filter;
     linkaddr_copy((linkaddr_t *)&filter.dest_addr, &msg_global.dest_addr);
     struct table_record *table_entry = search_row(filter);
-
-    if (table_entry != NULL) {
-        list_remove(routing_table, table_entry);
-        printf("Error detected. Reply not received within timout from node %d.%d. Entry removed from Routing table. \n", table_entry->next_addr.u8[0], table_entry->next_addr.u8[1]);
+    if (table_entry != NULL && !linkaddr_cmp(&table_entry->next_addr, &linkaddr_node_addr)) {
+        // list_remove(routing_table, table_entry);
         print_routing_table();
-        printf("Broadcasting again to find new route \n");
+        // printf("Broadcasting again to find new route \n");
         msg_global.is_print_only = false;
-        start_broadcast(msg_global);
-        broadcast_id++;
+        // send unicast message
+        send_unicast_msg(msg_global, table_entry->next_addr, table_entry);
+        // broadcast_id++;
     }
 	PROCESS_END();
 }
 
 /**
- * The nodes that are on the path discovered by RREP are deleted after timeout
+ * The nodes that are on the path discovered by RREP are deleted after a certain timeout
 */
 PROCESS_THREAD(pt_delete_reverse_pointer, ev, data)
 {
@@ -475,7 +548,7 @@ PROCESS_THREAD(pt_delete_reverse_pointer, ev, data)
     // 5 seconds are enough to wait for RREP from destination
 	static linkaddr_t dest_addr;
     linkaddr_copy((linkaddr_t *)&dest_addr, &(*((linkaddr_t *)data)));
-    etimer_set(&et2, CLOCK_SECOND * 3);
+    etimer_set(&et2, CLOCK_SECOND * ACTIVE_ROUTE_TIMEOUT);
     PROCESS_WAIT_EVENT_UNTIL(etimer_expired(&et2));
     struct table_record filter;
     linkaddr_copy((linkaddr_t *)&filter.dest_addr, &dest_addr);

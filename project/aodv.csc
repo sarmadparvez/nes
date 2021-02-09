@@ -194,7 +194,7 @@
   <plugin>
     org.contikios.cooja.plugins.SimControl
     <width>280</width>
-    <z>0</z>
+    <z>1</z>
     <height>160</height>
     <location_x>402</location_x>
     <location_y>-1</location_y>
@@ -210,7 +210,7 @@
       <viewport>2.7257920169298635 0.0 0.0 2.7257920169298635 -15.822029859984717 92.11106227385392</viewport>
     </plugin_config>
     <width>400</width>
-    <z>5</z>
+    <z>4</z>
     <height>400</height>
     <location_x>1</location_x>
     <location_y>1</location_y>
@@ -223,7 +223,7 @@
       <coloring />
     </plugin_config>
     <width>1248</width>
-    <z>4</z>
+    <z>3</z>
     <height>298</height>
     <location_x>400</location_x>
     <location_y>160</location_y>
@@ -235,7 +235,7 @@
       <decorations>true</decorations>
     </plugin_config>
     <width>968</width>
-    <z>6</z>
+    <z>5</z>
     <height>160</height>
     <location_x>680</location_x>
     <location_y>0</location_y>
@@ -255,29 +255,16 @@
   </plugin>
   <plugin>
     org.contikios.cooja.plugins.MoteInterfaceViewer
-    <mote_arg>1</mote_arg>
-    <plugin_config>
-      <interface>Button</interface>
-      <scrollpos>0,0</scrollpos>
-    </plugin_config>
-    <width>350</width>
-    <z>1</z>
-    <height>300</height>
-    <location_x>618</location_x>
-    <location_y>487</location_y>
-  </plugin>
-  <plugin>
-    org.contikios.cooja.plugins.MoteInterfaceViewer
     <mote_arg>5</mote_arg>
     <plugin_config>
       <interface>Button</interface>
       <scrollpos>0,0</scrollpos>
     </plugin_config>
     <width>350</width>
-    <z>3</z>
+    <z>0</z>
     <height>300</height>
-    <location_x>1173</location_x>
-    <location_y>475</location_y>
+    <location_x>547</location_x>
+    <location_y>468</location_y>
   </plugin>
 </simconf>
 
