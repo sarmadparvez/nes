@@ -86,8 +86,8 @@
       <breakpoints />
       <interface_config>
         org.contikios.cooja.interfaces.Position
-        <x>39.23159023907352</x>
-        <y>14.592479819378974</y>
+        <x>60.14294358003778</x>
+        <y>21.92979678112082</y>
         <z>0.0</z>
       </interface_config>
       <interface_config>
@@ -176,8 +176,8 @@
       <breakpoints />
       <interface_config>
         org.contikios.cooja.interfaces.Position
-        <x>131.8188580449667</x>
-        <y>67.99440019171455</y>
+        <x>129.61766295644415</x>
+        <y>54.420363812492134</y>
         <z>0.0</z>
       </interface_config>
       <interface_config>
@@ -223,7 +223,7 @@
       <coloring />
     </plugin_config>
     <width>1248</width>
-    <z>3</z>
+    <z>4</z>
     <height>298</height>
     <location_x>400</location_x>
     <location_y>160</location_y>
@@ -248,7 +248,7 @@
       <scrollpos>0,0</scrollpos>
     </plugin_config>
     <width>350</width>
-    <z>4</z>
+    <z>2</z>
     <height>300</height>
     <location_x>56</location_x>
     <location_y>463</location_y>
@@ -261,7 +261,7 @@
       <scrollpos>0,0</scrollpos>
     </plugin_config>
     <width>350</width>
-    <z>2</z>
+    <z>1</z>
     <height>300</height>
     <location_x>618</location_x>
     <location_y>487</location_y>
@@ -274,7 +274,7 @@
       <scrollpos>0,0</scrollpos>
     </plugin_config>
     <width>350</width>
-    <z>1</z>
+    <z>3</z>
     <height>300</height>
     <location_x>1173</location_x>
     <location_y>475</location_y>
